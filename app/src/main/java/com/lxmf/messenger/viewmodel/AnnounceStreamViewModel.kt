@@ -9,6 +9,7 @@ import androidx.paging.filter
 import com.lxmf.messenger.data.model.InterfaceType
 import com.lxmf.messenger.data.repository.Announce
 import com.lxmf.messenger.data.repository.AnnounceRepository
+import com.lxmf.messenger.data.repository.AnnounceSortMode
 import com.lxmf.messenger.data.repository.ContactRepository
 import com.lxmf.messenger.data.repository.IdentityRepository
 import com.lxmf.messenger.reticulum.model.NetworkStatus
@@ -64,6 +65,8 @@ class AnnounceStreamViewModel
             val selectedTypes: Set<NodeType>,
             val showAudio: Boolean,
             val selectedInterfaces: Set<InterfaceType>,
+            val sortMode: AnnounceSortMode,
+            val maxHops: Int?,
         )
 
         // Search query state
@@ -81,6 +84,14 @@ class AnnounceStreamViewModel
         private val _selectedInterfaceTypes = MutableStateFlow<Set<InterfaceType>>(emptySet())
         val selectedInterfaceTypes: StateFlow<Set<InterfaceType>> = _selectedInterfaceTypes.asStateFlow()
 
+        // Sort mode state
+        private val _sortMode = MutableStateFlow(AnnounceSortMode.RECENT)
+        val sortMode: StateFlow<AnnounceSortMode> = _sortMode.asStateFlow()
+
+        // Max hops filter state - null means no limit
+        private val _maxHops = MutableStateFlow<Int?>(null)
+        val maxHops: StateFlow<Int?> = _maxHops.asStateFlow()
+
         // Total announce count for tab label
         val announceCount: StateFlow<Int> =
             announceRepository
@@ -92,20 +103,24 @@ class AnnounceStreamViewModel
                 )
 
         // Announces with pagination support, filtered by node types, audio filter,
-        // interface types, AND search query
+        // interface types, max hops, AND search query
         val announces: Flow<PagingData<com.lxmf.messenger.data.repository.Announce>> =
             combine(
                 searchQuery,
                 _selectedNodeTypes,
                 _showAudioAnnounces,
-                _selectedInterfaceTypes,
-            ) { query, selectedTypes, showAudio, selectedInterfaces ->
-                FilterParams(query, selectedTypes, showAudio, selectedInterfaces)
+                combine(_selectedInterfaceTypes, _sortMode, _maxHops) { ifaces, sort, hops ->
+                    Triple(ifaces, sort, hops)
+                },
+            ) { query, selectedTypes, showAudio, (selectedInterfaces, sortMode, maxHops) ->
+                FilterParams(query, selectedTypes, showAudio, selectedInterfaces, sortMode, maxHops)
             }.flatMapLatest { params ->
                 val query = params.query
                 val selectedTypes = params.selectedTypes
                 val showAudio = params.showAudio
                 val selectedInterfaces = params.selectedInterfaces
+                val sortMode = params.sortMode
+                val maxHops = params.maxHops
                 // Build type list for database query
                 // If showAudio is true but PEER is not selected, still include PEER in DB query
                 // (because audio announces have nodeType=PEER), then filter by aspect in memory
@@ -126,8 +141,9 @@ class AnnounceStreamViewModel
                         .getAnnouncesPaged(
                             nodeTypes = typeStrings,
                             searchQuery = query.trim(),
+                            sortMode = sortMode,
                         ).map { pagingData ->
-                            // Apply in-memory filters for nodeType, audio aspect, and interface type
+                            // Apply in-memory filters for nodeType, audio aspect, interface type, and max hops
                             pagingData.filter { announce ->
                                 // Filter by nodeType
                                 // (exclude PEER if user didn't select it and we only added it for audio)
@@ -145,7 +161,10 @@ class AnnounceStreamViewModel
                                             InterfaceType.fromInterfaceName(announce.receivingInterface),
                                         )
 
-                                matchesTypeOrAudio && matchesInterface
+                                // Filter by max hops (null = no limit)
+                                val matchesMaxHops = maxHops == null || announce.hops <= maxHops
+
+                                matchesTypeOrAudio && matchesInterface && matchesMaxHops
                             }
                         }
                 }
@@ -386,6 +405,19 @@ class AnnounceStreamViewModel
 
         fun updateSelectedInterfaceTypes(types: Set<InterfaceType>) {
             _selectedInterfaceTypes.value = types
+        }
+
+        fun cycleSortMode() {
+            _sortMode.value =
+                when (_sortMode.value) {
+                    AnnounceSortMode.RECENT -> AnnounceSortMode.HOPS_ASC
+                    AnnounceSortMode.HOPS_ASC -> AnnounceSortMode.HOPS_DESC
+                    AnnounceSortMode.HOPS_DESC -> AnnounceSortMode.RECENT
+                }
+        }
+
+        fun updateMaxHops(maxHops: Int?) {
+            _maxHops.value = maxHops
         }
 
         /**

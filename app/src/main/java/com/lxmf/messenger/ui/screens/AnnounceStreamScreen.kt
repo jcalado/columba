@@ -46,6 +46,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -63,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -353,15 +355,18 @@ fun AnnounceStreamScreen(
 
     // Show filter dialog
     if (showFilterDialog) {
+        val maxHops by viewModel.maxHops.collectAsState()
         NodeTypeFilterDialog(
             selectedTypes = selectedNodeTypes,
             showAudio = showAudioAnnounces,
             selectedInterfaceTypes = selectedInterfaceTypes,
+            maxHops = maxHops,
             onDismiss = { showFilterDialog = false },
-            onConfirm = { newSelection, newShowAudio, newInterfaceTypes ->
+            onConfirm = { newSelection, newShowAudio, newInterfaceTypes, newMaxHops ->
                 viewModel.updateSelectedNodeTypes(newSelection)
                 viewModel.updateShowAudioAnnounces(newShowAudio)
                 viewModel.updateSelectedInterfaceTypes(newInterfaceTypes)
+                viewModel.updateMaxHops(newMaxHops)
                 showFilterDialog = false
             },
         )
@@ -403,12 +408,14 @@ fun NodeTypeFilterDialog(
     selectedTypes: Set<NodeType>,
     showAudio: Boolean,
     selectedInterfaceTypes: Set<InterfaceType> = emptySet(),
+    maxHops: Int? = null,
     onDismiss: () -> Unit,
-    onConfirm: (Set<NodeType>, Boolean, Set<InterfaceType>) -> Unit,
+    onConfirm: (Set<NodeType>, Boolean, Set<InterfaceType>, Int?) -> Unit,
 ) {
     var tempSelection by remember { mutableStateOf(selectedTypes) }
     var tempShowAudio by remember { mutableStateOf(showAudio) }
     var tempInterfaceSelection by remember { mutableStateOf(selectedInterfaceTypes) }
+    var tempMaxHops by remember { mutableStateOf(maxHops) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -604,11 +611,65 @@ fun NodeTypeFilterDialog(
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Max hops filter section
+                Text(
+                    text = "Max Hops",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+
+                Text(
+                    text = if (tempMaxHops != null) "Show announces within $tempMaxHops hops" else "No hop limit",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Checkbox(
+                        checked = tempMaxHops != null,
+                        onCheckedChange = { enabled ->
+                            tempMaxHops = if (enabled) 3 else null
+                        },
+                    )
+                    Text(
+                        text = "Limit hops",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+
+                if (tempMaxHops != null) {
+                    Slider(
+                        value = (tempMaxHops ?: 3).toFloat(),
+                        onValueChange = { tempMaxHops = it.toInt() },
+                        valueRange = 1f..15f,
+                        steps = 13,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        text = "${tempMaxHops} hops",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { onConfirm(tempSelection, tempShowAudio, tempInterfaceSelection) },
+                onClick = { onConfirm(tempSelection, tempShowAudio, tempInterfaceSelection, tempMaxHops) },
             ) {
                 Text("Apply")
             }

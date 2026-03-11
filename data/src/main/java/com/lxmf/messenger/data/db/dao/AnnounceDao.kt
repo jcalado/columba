@@ -504,6 +504,39 @@ interface AnnounceDao {
     fun getEnrichedAnnouncesPaged(): PagingSource<Int, EnrichedAnnounce>
 
     /**
+     * Get all announces with icon data and pagination support, sorted by hops ascending.
+     */
+    @Query(
+        """
+        SELECT
+            a.destinationHash,
+            a.peerName,
+            a.publicKey,
+            a.appData,
+            a.hops,
+            a.lastSeenTimestamp,
+            a.nodeType,
+            a.receivingInterface,
+            a.receivingInterfaceType,
+            a.aspect,
+            a.isFavorite,
+            a.favoritedTimestamp,
+            a.stampCost,
+            a.stampCostFlexibility,
+            a.peeringCost,
+            a.propagationTransferLimitKb,
+            pi.iconName as iconName,
+            pi.foregroundColor as iconForegroundColor,
+            pi.backgroundColor as iconBackgroundColor
+        FROM announces a
+        LEFT JOIN peer_icons pi ON a.destinationHash = pi.destinationHash
+        WHERE (a.nodeType != 'PROPAGATION_NODE' OR a.stampCostFlexibility IS NOT NULL)
+        ORDER BY a.hops ASC, a.lastSeenTimestamp DESC
+        """,
+    )
+    fun getEnrichedAnnouncesPagedByHopsAsc(): PagingSource<Int, EnrichedAnnounce>
+
+    /**
      * Get announces filtered by node types with icon data and pagination support.
      */
     @Query(
@@ -536,6 +569,40 @@ interface AnnounceDao {
         """,
     )
     fun getEnrichedAnnouncesByTypesPaged(nodeTypes: List<String>): PagingSource<Int, EnrichedAnnounce>
+
+    /**
+     * Get announces filtered by node types with icon data and pagination support, sorted by hops ascending.
+     */
+    @Query(
+        """
+        SELECT
+            a.destinationHash,
+            a.peerName,
+            a.publicKey,
+            a.appData,
+            a.hops,
+            a.lastSeenTimestamp,
+            a.nodeType,
+            a.receivingInterface,
+            a.receivingInterfaceType,
+            a.aspect,
+            a.isFavorite,
+            a.favoritedTimestamp,
+            a.stampCost,
+            a.stampCostFlexibility,
+            a.peeringCost,
+            a.propagationTransferLimitKb,
+            pi.iconName as iconName,
+            pi.foregroundColor as iconForegroundColor,
+            pi.backgroundColor as iconBackgroundColor
+        FROM announces a
+        LEFT JOIN peer_icons pi ON a.destinationHash = pi.destinationHash
+        WHERE a.nodeType IN (:nodeTypes)
+        AND (a.nodeType != 'PROPAGATION_NODE' OR a.stampCostFlexibility IS NOT NULL)
+        ORDER BY a.hops ASC, a.lastSeenTimestamp DESC
+        """,
+    )
+    fun getEnrichedAnnouncesByTypesPagedByHopsAsc(nodeTypes: List<String>): PagingSource<Int, EnrichedAnnounce>
 
     /**
      * Search announces with icon data and pagination support.
@@ -572,6 +639,40 @@ interface AnnounceDao {
     fun searchEnrichedAnnouncesPaged(query: String): PagingSource<Int, EnrichedAnnounce>
 
     /**
+     * Search announces with icon data and pagination support, sorted by hops ascending.
+     */
+    @Query(
+        """
+        SELECT
+            a.destinationHash,
+            a.peerName,
+            a.publicKey,
+            a.appData,
+            a.hops,
+            a.lastSeenTimestamp,
+            a.nodeType,
+            a.receivingInterface,
+            a.receivingInterfaceType,
+            a.aspect,
+            a.isFavorite,
+            a.favoritedTimestamp,
+            a.stampCost,
+            a.stampCostFlexibility,
+            a.peeringCost,
+            a.propagationTransferLimitKb,
+            pi.iconName as iconName,
+            pi.foregroundColor as iconForegroundColor,
+            pi.backgroundColor as iconBackgroundColor
+        FROM announces a
+        LEFT JOIN peer_icons pi ON a.destinationHash = pi.destinationHash
+        WHERE (a.peerName LIKE '%' || :query || '%' OR a.destinationHash LIKE '%' || :query || '%')
+        AND (a.nodeType != 'PROPAGATION_NODE' OR a.stampCostFlexibility IS NOT NULL)
+        ORDER BY a.hops ASC, a.lastSeenTimestamp DESC
+        """,
+    )
+    fun searchEnrichedAnnouncesPagedByHopsAsc(query: String): PagingSource<Int, EnrichedAnnounce>
+
+    /**
      * Get announces filtered by node types AND search query with icon data and pagination.
      */
     @Query(
@@ -605,6 +706,185 @@ interface AnnounceDao {
         """,
     )
     fun getEnrichedAnnouncesByTypesAndSearchPaged(
+        nodeTypes: List<String>,
+        query: String,
+    ): PagingSource<Int, EnrichedAnnounce>
+
+    /**
+     * Get announces filtered by node types AND search query with icon data and pagination, sorted by hops ascending.
+     */
+    @Query(
+        """
+        SELECT
+            a.destinationHash,
+            a.peerName,
+            a.publicKey,
+            a.appData,
+            a.hops,
+            a.lastSeenTimestamp,
+            a.nodeType,
+            a.receivingInterface,
+            a.receivingInterfaceType,
+            a.aspect,
+            a.isFavorite,
+            a.favoritedTimestamp,
+            a.stampCost,
+            a.stampCostFlexibility,
+            a.peeringCost,
+            a.propagationTransferLimitKb,
+            pi.iconName as iconName,
+            pi.foregroundColor as iconForegroundColor,
+            pi.backgroundColor as iconBackgroundColor
+        FROM announces a
+        LEFT JOIN peer_icons pi ON a.destinationHash = pi.destinationHash
+        WHERE a.nodeType IN (:nodeTypes)
+        AND (a.peerName LIKE '%' || :query || '%' OR a.destinationHash LIKE '%' || :query || '%')
+        AND (a.nodeType != 'PROPAGATION_NODE' OR a.stampCostFlexibility IS NOT NULL)
+        ORDER BY a.hops ASC, a.lastSeenTimestamp DESC
+        """,
+    )
+    fun getEnrichedAnnouncesByTypesAndSearchPagedByHopsAsc(
+        nodeTypes: List<String>,
+        query: String,
+    ): PagingSource<Int, EnrichedAnnounce>
+
+    // Hops descending variants
+
+    /**
+     * Get all announces with icon data and pagination support, sorted by hops descending.
+     */
+    @Query(
+        """
+        SELECT
+            a.destinationHash,
+            a.peerName,
+            a.publicKey,
+            a.appData,
+            a.hops,
+            a.lastSeenTimestamp,
+            a.nodeType,
+            a.receivingInterface,
+            a.receivingInterfaceType,
+            a.aspect,
+            a.isFavorite,
+            a.favoritedTimestamp,
+            a.stampCost,
+            a.stampCostFlexibility,
+            a.peeringCost,
+            a.propagationTransferLimitKb,
+            pi.iconName as iconName,
+            pi.foregroundColor as iconForegroundColor,
+            pi.backgroundColor as iconBackgroundColor
+        FROM announces a
+        LEFT JOIN peer_icons pi ON a.destinationHash = pi.destinationHash
+        WHERE (a.nodeType != 'PROPAGATION_NODE' OR a.stampCostFlexibility IS NOT NULL)
+        ORDER BY a.hops DESC, a.lastSeenTimestamp DESC
+        """,
+    )
+    fun getEnrichedAnnouncesPagedByHopsDesc(): PagingSource<Int, EnrichedAnnounce>
+
+    /**
+     * Get announces filtered by node types with icon data and pagination support, sorted by hops descending.
+     */
+    @Query(
+        """
+        SELECT
+            a.destinationHash,
+            a.peerName,
+            a.publicKey,
+            a.appData,
+            a.hops,
+            a.lastSeenTimestamp,
+            a.nodeType,
+            a.receivingInterface,
+            a.receivingInterfaceType,
+            a.aspect,
+            a.isFavorite,
+            a.favoritedTimestamp,
+            a.stampCost,
+            a.stampCostFlexibility,
+            a.peeringCost,
+            a.propagationTransferLimitKb,
+            pi.iconName as iconName,
+            pi.foregroundColor as iconForegroundColor,
+            pi.backgroundColor as iconBackgroundColor
+        FROM announces a
+        LEFT JOIN peer_icons pi ON a.destinationHash = pi.destinationHash
+        WHERE a.nodeType IN (:nodeTypes)
+        AND (a.nodeType != 'PROPAGATION_NODE' OR a.stampCostFlexibility IS NOT NULL)
+        ORDER BY a.hops DESC, a.lastSeenTimestamp DESC
+        """,
+    )
+    fun getEnrichedAnnouncesByTypesPagedByHopsDesc(nodeTypes: List<String>): PagingSource<Int, EnrichedAnnounce>
+
+    /**
+     * Search announces with icon data and pagination support, sorted by hops descending.
+     */
+    @Query(
+        """
+        SELECT
+            a.destinationHash,
+            a.peerName,
+            a.publicKey,
+            a.appData,
+            a.hops,
+            a.lastSeenTimestamp,
+            a.nodeType,
+            a.receivingInterface,
+            a.receivingInterfaceType,
+            a.aspect,
+            a.isFavorite,
+            a.favoritedTimestamp,
+            a.stampCost,
+            a.stampCostFlexibility,
+            a.peeringCost,
+            a.propagationTransferLimitKb,
+            pi.iconName as iconName,
+            pi.foregroundColor as iconForegroundColor,
+            pi.backgroundColor as iconBackgroundColor
+        FROM announces a
+        LEFT JOIN peer_icons pi ON a.destinationHash = pi.destinationHash
+        WHERE (a.peerName LIKE '%' || :query || '%' OR a.destinationHash LIKE '%' || :query || '%')
+        AND (a.nodeType != 'PROPAGATION_NODE' OR a.stampCostFlexibility IS NOT NULL)
+        ORDER BY a.hops DESC, a.lastSeenTimestamp DESC
+        """,
+    )
+    fun searchEnrichedAnnouncesPagedByHopsDesc(query: String): PagingSource<Int, EnrichedAnnounce>
+
+    /**
+     * Get announces filtered by node types AND search query with icon data and pagination, sorted by hops descending.
+     */
+    @Query(
+        """
+        SELECT
+            a.destinationHash,
+            a.peerName,
+            a.publicKey,
+            a.appData,
+            a.hops,
+            a.lastSeenTimestamp,
+            a.nodeType,
+            a.receivingInterface,
+            a.receivingInterfaceType,
+            a.aspect,
+            a.isFavorite,
+            a.favoritedTimestamp,
+            a.stampCost,
+            a.stampCostFlexibility,
+            a.peeringCost,
+            a.propagationTransferLimitKb,
+            pi.iconName as iconName,
+            pi.foregroundColor as iconForegroundColor,
+            pi.backgroundColor as iconBackgroundColor
+        FROM announces a
+        LEFT JOIN peer_icons pi ON a.destinationHash = pi.destinationHash
+        WHERE a.nodeType IN (:nodeTypes)
+        AND (a.peerName LIKE '%' || :query || '%' OR a.destinationHash LIKE '%' || :query || '%')
+        AND (a.nodeType != 'PROPAGATION_NODE' OR a.stampCostFlexibility IS NOT NULL)
+        ORDER BY a.hops DESC, a.lastSeenTimestamp DESC
+        """,
+    )
+    fun getEnrichedAnnouncesByTypesAndSearchPagedByHopsDesc(
         nodeTypes: List<String>,
         query: String,
     ): PagingSource<Int, EnrichedAnnounce>

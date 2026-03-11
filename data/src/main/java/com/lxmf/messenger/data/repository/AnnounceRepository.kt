@@ -14,6 +14,15 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * Sort mode for announce queries.
+ */
+enum class AnnounceSortMode {
+    RECENT,
+    HOPS_ASC,
+    HOPS_DESC,
+}
+
+/**
  * Data class representing an announce for UI layer
  */
 @androidx.compose.runtime.Stable
@@ -162,6 +171,7 @@ class AnnounceRepository
         fun getAnnouncesPaged(
             nodeTypes: List<String>,
             searchQuery: String,
+            sortMode: AnnounceSortMode = AnnounceSortMode.RECENT,
         ): Flow<PagingData<Announce>> =
             Pager(
                 config =
@@ -172,19 +182,42 @@ class AnnounceRepository
                         enablePlaceholders = false,
                     ),
                 pagingSourceFactory = {
-                    when {
-                        // Filter by node types AND search query
-                        nodeTypes.isNotEmpty() && searchQuery.isNotEmpty() ->
-                            announceDao.getEnrichedAnnouncesByTypesAndSearchPaged(nodeTypes, searchQuery)
-                        // Filter by node types only
-                        nodeTypes.isNotEmpty() ->
-                            announceDao.getEnrichedAnnouncesByTypesPaged(nodeTypes)
-                        // Filter by search query only
-                        searchQuery.isNotEmpty() ->
-                            announceDao.searchEnrichedAnnouncesPaged(searchQuery)
-                        // No filters
-                        else ->
-                            announceDao.getEnrichedAnnouncesPaged()
+                    val hasTypes = nodeTypes.isNotEmpty()
+                    val hasSearch = searchQuery.isNotEmpty()
+                    when (sortMode) {
+                        AnnounceSortMode.RECENT ->
+                            when {
+                                hasTypes && hasSearch ->
+                                    announceDao.getEnrichedAnnouncesByTypesAndSearchPaged(nodeTypes, searchQuery)
+                                hasTypes ->
+                                    announceDao.getEnrichedAnnouncesByTypesPaged(nodeTypes)
+                                hasSearch ->
+                                    announceDao.searchEnrichedAnnouncesPaged(searchQuery)
+                                else ->
+                                    announceDao.getEnrichedAnnouncesPaged()
+                            }
+                        AnnounceSortMode.HOPS_ASC ->
+                            when {
+                                hasTypes && hasSearch ->
+                                    announceDao.getEnrichedAnnouncesByTypesAndSearchPagedByHopsAsc(nodeTypes, searchQuery)
+                                hasTypes ->
+                                    announceDao.getEnrichedAnnouncesByTypesPagedByHopsAsc(nodeTypes)
+                                hasSearch ->
+                                    announceDao.searchEnrichedAnnouncesPagedByHopsAsc(searchQuery)
+                                else ->
+                                    announceDao.getEnrichedAnnouncesPagedByHopsAsc()
+                            }
+                        AnnounceSortMode.HOPS_DESC ->
+                            when {
+                                hasTypes && hasSearch ->
+                                    announceDao.getEnrichedAnnouncesByTypesAndSearchPagedByHopsDesc(nodeTypes, searchQuery)
+                                hasTypes ->
+                                    announceDao.getEnrichedAnnouncesByTypesPagedByHopsDesc(nodeTypes)
+                                hasSearch ->
+                                    announceDao.searchEnrichedAnnouncesPagedByHopsDesc(searchQuery)
+                                else ->
+                                    announceDao.getEnrichedAnnouncesPagedByHopsDesc()
+                            }
                     }
                 },
             ).flow.map { pagingData ->

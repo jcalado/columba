@@ -30,6 +30,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
@@ -51,6 +53,7 @@ import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SortByAlpha
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
@@ -104,6 +107,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lxmf.messenger.data.db.entity.ContactStatus
+import com.lxmf.messenger.data.repository.AnnounceSortMode
 import com.lxmf.messenger.data.model.EnrichedContact
 import com.lxmf.messenger.ui.components.AddContactConfirmationDialog
 import com.lxmf.messenger.ui.components.ProfileIcon
@@ -161,8 +165,10 @@ fun ContactsScreen(
     val selectedNodeTypes by announceViewModel.selectedNodeTypes.collectAsState()
     val showAudioAnnounces by announceViewModel.showAudioAnnounces.collectAsState()
     val selectedInterfaceTypes by announceViewModel.selectedInterfaceTypes.collectAsState()
+    val maxHops by announceViewModel.maxHops.collectAsState()
     val announceSearchQuery by announceViewModel.searchQuery.collectAsState()
     val announceCount by announceViewModel.announceCount.collectAsState()
+    val sortMode by announceViewModel.sortMode.collectAsState()
     val isAnnouncing by announceViewModel.isAnnouncing.collectAsState()
     val announceSuccess by announceViewModel.announceSuccess.collectAsState()
     val announceError by announceViewModel.announceError.collectAsState()
@@ -285,6 +291,29 @@ fun ContactsScreen(
                                         contentDescription = "Announce now",
                                     )
                                 }
+                            }
+                            // Sort by hops cycle button (recent -> asc -> desc -> recent)
+                            IconButton(onClick = { announceViewModel.cycleSortMode() }) {
+                                Icon(
+                                    imageVector =
+                                        when (sortMode) {
+                                            AnnounceSortMode.RECENT -> Icons.Default.SortByAlpha
+                                            AnnounceSortMode.HOPS_ASC -> Icons.Default.ArrowUpward
+                                            AnnounceSortMode.HOPS_DESC -> Icons.Default.ArrowDownward
+                                        },
+                                    contentDescription =
+                                        when (sortMode) {
+                                            AnnounceSortMode.RECENT -> "Sort by nearest hops"
+                                            AnnounceSortMode.HOPS_ASC -> "Sort by farthest hops"
+                                            AnnounceSortMode.HOPS_DESC -> "Sort by recent"
+                                        },
+                                    tint =
+                                        if (sortMode != AnnounceSortMode.RECENT) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        },
+                                )
                             }
                             // Filter button
                             IconButton(onClick = { showNodeTypeFilterDialog = true }) {
@@ -888,11 +917,13 @@ fun ContactsScreen(
             selectedTypes = selectedNodeTypes,
             showAudio = showAudioAnnounces,
             selectedInterfaceTypes = selectedInterfaceTypes,
+            maxHops = maxHops,
             onDismiss = { showNodeTypeFilterDialog = false },
-            onConfirm = { newSelection, newShowAudio, newInterfaceTypes ->
+            onConfirm = { newSelection, newShowAudio, newInterfaceTypes, newMaxHops ->
                 announceViewModel.updateSelectedNodeTypes(newSelection)
                 announceViewModel.updateShowAudioAnnounces(newShowAudio)
                 announceViewModel.updateSelectedInterfaceTypes(newInterfaceTypes)
+                announceViewModel.updateMaxHops(newMaxHops)
                 showNodeTypeFilterDialog = false
             },
         )
