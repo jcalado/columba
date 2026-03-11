@@ -16,14 +16,17 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
 import com.chaquo.python.PyObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -130,6 +133,10 @@ class KotlinRNodeBridge(
         private const val BLE_CONNECT_MAX_RETRIES = 3
         private const val BLE_RETRY_DELAY_MS = 1000L
 
+        // BLE keepalive - prevents Android supervision timeout (status 8)
+        // Android drops idle BLE connections after ~20-30 seconds of inactivity
+        private const val BLE_KEEPALIVE_INTERVAL_MS = 15000L
+
         /**
          * Convert GATT status code to human-readable string for debugging.
          */
@@ -195,10 +202,16 @@ class KotlinRNodeBridge(
     private var bleServicesDiscovered = false
 
     @Volatile
+    private var bleNotificationsEnabled = false // Tracks if CCCD descriptor write completed
+
+    @Volatile
     private var bleMtuCallbackReceived = false // Tracks if onMtuChanged callback fired
 
     @Volatile
     private var bleRssi: Int = -100 // Current RSSI (-100 = unknown)
+
+    // BLE keepalive job - sends periodic RSSI reads to prevent supervision timeout
+    private var bleKeepaliveJob: Job? = null
 
     // Common state
     private var connectedDeviceName: String? = null
@@ -552,19 +565,25 @@ class KotlinRNodeBridge(
         }
 
         // Retry loop for BLE connection (handles transient failures like GATT error 133)
+        // Strategy: try autoConnect=false first (fast, works for advertising devices like after
+        // power cycle), then autoConnect=true (slow background scan, works for bonded devices
+        // that may not be advertising).
         for (attempt in 1..BLE_CONNECT_MAX_RETRIES) {
             if (attempt > 1) {
                 Log.i(TAG, "BLE connection attempt $attempt/$BLE_CONNECT_MAX_RETRIES...")
-                Thread.sleep(BLE_RETRY_DELAY_MS)
+                Thread.sleep(BLE_RETRY_DELAY_MS * attempt) // Increasing delay between retries
             }
 
-            val success = attemptBleConnection(device, deviceName)
+            // First attempt: autoConnect=false (direct connect, fast)
+            // Subsequent attempts: autoConnect=true (background scan, for bonded non-advertising devices)
+            val useAutoConnect = attempt > 1
+            val success = attemptBleConnection(device, deviceName, useAutoConnect)
             if (success) {
                 return true
             }
 
             if (attempt < BLE_CONNECT_MAX_RETRIES) {
-                Log.w(TAG, "BLE connection failed, will retry...")
+                Log.w(TAG, "BLE connection failed (autoConnect=$useAutoConnect), will retry...")
             }
         }
 
@@ -574,31 +593,43 @@ class KotlinRNodeBridge(
 
     /**
      * Single attempt to connect via BLE GATT.
+     *
+     * @param autoConnect false = immediate connect (fast, needs advertising device),
+     *                    true = background connect (slow, works for bonded non-advertising devices)
      */
     private fun attemptBleConnection(
         device: BluetoothDevice,
         deviceName: String,
+        autoConnect: Boolean,
     ): Boolean {
         return try {
             // Reset BLE state
             bleConnected = false
             bleServicesDiscovered = false
+            bleNotificationsEnabled = false
             bleMtuCallbackReceived = false
             bleRxCharacteristic = null
             bleTxCharacteristic = null
 
-            // Connect GATT
-            Log.d(TAG, "Connecting GATT to ${device.address}...")
-            bluetoothGatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            val isBonded = device.bondState == BluetoothDevice.BOND_BONDED
+            Log.d(TAG, "Connecting GATT to ${device.address} (bonded=$isBonded, autoConnect=$autoConnect)...")
+            bluetoothGatt = device.connectGatt(context, autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
 
-            // Wait for connection and service discovery
+            // Wait for connection, service discovery, AND notification enablement
+            // autoConnect=true uses background scanning so may need longer timeout
+            val timeout = if (autoConnect) BLE_CONNECT_TIMEOUT_MS * 2 else BLE_CONNECT_TIMEOUT_MS
             val startTime = System.currentTimeMillis()
-            while (!bleServicesDiscovered && (System.currentTimeMillis() - startTime) < BLE_CONNECT_TIMEOUT_MS) {
+            while (!bleNotificationsEnabled && (System.currentTimeMillis() - startTime) < timeout) {
                 Thread.sleep(100)
             }
 
-            if (!bleServicesDiscovered) {
-                Log.e(TAG, "BLE connection timeout - services not discovered")
+            if (!bleNotificationsEnabled) {
+                Log.e(
+                    TAG,
+                    "BLE connection timeout - notifications not enabled " +
+                        "(bonded=$isBonded, connected=$bleConnected, " +
+                        "servicesDiscovered=$bleServicesDiscovered, autoConnect=$autoConnect)",
+                )
                 cleanupBle()
                 return false
             }
@@ -612,6 +643,9 @@ class KotlinRNodeBridge(
             connectedDeviceName = deviceName
             connectionMode = RNodeConnectionMode.BLE
             isConnected.set(true)
+
+            // Start keepalive to prevent Android BLE supervision timeout
+            startBleKeepalive()
 
             Log.d(TAG, "████ RNODE BLE SUCCESS ████ deviceName=$deviceName MTU=$bleMtu")
 
@@ -696,9 +730,15 @@ class KotlinRNodeBridge(
             ) {
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
-                        Log.i(TAG, "BLE connected, requesting MTU...")
+                        Log.i(TAG, "BLE connected (status=${gattStatusToString(status)}), requesting MTU...")
                         bleConnected = true
                         bleMtuCallbackReceived = false
+                        // Request high connection priority for better stability
+                        try {
+                            gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                        } catch (e: SecurityException) {
+                            Log.w(TAG, "Permission denied requesting connection priority", e)
+                        }
                         // Request higher MTU for better throughput
                         gatt.requestMtu(512)
                         // Timeout: if onMtuChanged doesn't fire within 2 seconds,
@@ -748,10 +788,14 @@ class KotlinRNodeBridge(
 
                 Log.d(TAG, "BLE services discovered")
 
+                // Log all discovered services for debugging
+                val discoveredServices = gatt.services.map { it.uuid.toString() }
+                Log.d(TAG, "Discovered ${discoveredServices.size} services: $discoveredServices")
+
                 // Find Nordic UART Service
                 val nusService = gatt.getService(NUS_SERVICE_UUID)
                 if (nusService == null) {
-                    Log.e(TAG, "Nordic UART Service not found")
+                    Log.e(TAG, "Nordic UART Service ($NUS_SERVICE_UUID) not found in discovered services")
                     return
                 }
 
@@ -769,32 +813,68 @@ class KotlinRNodeBridge(
                 // Enable notifications on TX characteristic (data from RNode)
                 gatt.setCharacteristicNotification(txChar, true)
                 val descriptor = txChar.getDescriptor(CCCD_UUID)
-                descriptor?.let {
-                    it.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    gatt.writeDescriptor(it)
+                if (descriptor != null) {
+                    Log.d(TAG, "Writing CCCD descriptor to enable notifications...")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        @Suppress("DEPRECATION")
+                        gatt.writeDescriptor(descriptor)
+                    }
+                } else {
+                    Log.e(TAG, "CCCD descriptor not found on TX characteristic")
+                    // No CCCD = no notifications, but mark as discovered so we don't hang
+                    bleServicesDiscovered = true
+                    bleNotificationsEnabled = true
                 }
 
                 bleServicesDiscovered = true
-                Log.i(TAG, "BLE NUS service ready")
+                Log.d(TAG, "BLE services discovered, waiting for descriptor write to complete...")
             }
 
+            override fun onDescriptorWrite(
+                gatt: BluetoothGatt,
+                descriptor: BluetoothGattDescriptor,
+                status: Int,
+            ) {
+                if (descriptor.uuid == CCCD_UUID) {
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        bleNotificationsEnabled = true
+                        Log.i(TAG, "BLE NUS notifications enabled - service ready")
+                    } else {
+                        Log.e(
+                            TAG,
+                            "CCCD descriptor write failed: ${gattStatusToString(status)}. " +
+                                "Notifications may not work.",
+                        )
+                        // Still mark as enabled to unblock the connection attempt
+                        // The write retry will be handled at the application level
+                        bleNotificationsEnabled = true
+                    }
+                }
+            }
+
+            // API 33+ callback - receives data via parameter instead of characteristic.value
+            override fun onCharacteristicChanged(
+                gatt: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic,
+                value: ByteArray,
+            ) {
+                handleBleDataReceived(value)
+            }
+
+            // Pre-API 33 callback - receives data via characteristic.value
+            @Deprecated("Deprecated in API 33")
             override fun onCharacteristicChanged(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic,
             ) {
-                if (characteristic.uuid == NUS_TX_CHAR_UUID) {
-                    val data = characteristic.value
-                    if (data != null && data.isNotEmpty()) {
-                        Log.v(TAG, "BLE received ${data.size} bytes")
-
-                        // Add to read buffer
-                        for (byte in data) {
-                            readBuffer.offer(byte)
-                        }
-
-                        // Notify Python callback
-                        onDataReceived?.callAttr("__call__", data)
-                    }
+                @Suppress("DEPRECATION")
+                val data = characteristic.value
+                if (data != null) {
+                    handleBleDataReceived(data)
                 }
             }
 
@@ -837,9 +917,23 @@ class KotlinRNodeBridge(
         }
 
     /**
+     * Handle BLE data received from RNode (shared by both old and new API callbacks).
+     */
+    private fun handleBleDataReceived(data: ByteArray) {
+        if (data.isNotEmpty()) {
+            Log.v(TAG, "BLE received ${data.size} bytes")
+            for (byte in data) {
+                readBuffer.offer(byte)
+            }
+            onDataReceived?.callAttr("__call__", data)
+        }
+    }
+
+    /**
      * Clean up BLE resources.
      */
     private fun cleanupBle() {
+        stopBleKeepalive()
         try {
             bluetoothGatt?.disconnect()
             bluetoothGatt?.close()
@@ -851,7 +945,42 @@ class KotlinRNodeBridge(
         bleTxCharacteristic = null
         bleConnected = false
         bleServicesDiscovered = false
+        bleNotificationsEnabled = false
         bleMtuCallbackReceived = false
+    }
+
+    /**
+     * Start BLE keepalive to prevent Android supervision timeout.
+     *
+     * Android drops idle BLE connections after ~20-30 seconds of inactivity (status code 8).
+     * This sends periodic readRemoteRssi() requests which generate link-layer traffic
+     * without interfering with the KISS protocol data flow.
+     */
+    private fun startBleKeepalive() {
+        stopBleKeepalive()
+        bleKeepaliveJob = scope.launch {
+            Log.d(TAG, "BLE keepalive started (interval: ${BLE_KEEPALIVE_INTERVAL_MS}ms)")
+            while (isActive && bleConnected) {
+                delay(BLE_KEEPALIVE_INTERVAL_MS)
+                try {
+                    val gatt = bluetoothGatt
+                    if (gatt != null && bleConnected) {
+                        gatt.readRemoteRssi()
+                    } else {
+                        Log.d(TAG, "BLE keepalive stopping: connection gone")
+                        break
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "BLE keepalive error", e)
+                }
+            }
+            Log.d(TAG, "BLE keepalive stopped")
+        }
+    }
+
+    private fun stopBleKeepalive() {
+        bleKeepaliveJob?.cancel()
+        bleKeepaliveJob = null
     }
 
     /**
@@ -1026,8 +1155,19 @@ class KotlinRNodeBridge(
 
                 for (chunk in data.toList().chunked(maxPayload)) {
                     val chunkData = chunk.toByteArray()
-                    rxChar.value = chunkData
-                    if (!gatt.writeCharacteristic(rxChar)) {
+                    val writeOk = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        gatt.writeCharacteristic(
+                            rxChar,
+                            chunkData,
+                            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+                        ) == BluetoothGatt.GATT_SUCCESS
+                    } else {
+                        @Suppress("DEPRECATION")
+                        rxChar.value = chunkData
+                        @Suppress("DEPRECATION")
+                        gatt.writeCharacteristic(rxChar)
+                    }
+                    if (!writeOk) {
                         Log.e(TAG, "BLE write failed")
                         return@withContext -1
                     }
@@ -1133,8 +1273,19 @@ class KotlinRNodeBridge(
                         bleWriteStatus.set(BluetoothGatt.GATT_SUCCESS)
                     }
 
-                    rxChar.value = chunkData
-                    if (!gatt.writeCharacteristic(rxChar)) {
+                    val writeQueued = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        gatt.writeCharacteristic(
+                            rxChar,
+                            chunkData,
+                            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+                        ) == BluetoothGatt.GATT_SUCCESS
+                    } else {
+                        @Suppress("DEPRECATION")
+                        rxChar.value = chunkData
+                        @Suppress("DEPRECATION")
+                        gatt.writeCharacteristic(rxChar)
+                    }
+                    if (!writeQueued) {
                         Log.e(TAG, "BLE write failed to queue")
                         synchronized(bleWriteLock) {
                             bleWriteLatch = null
