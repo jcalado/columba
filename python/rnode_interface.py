@@ -381,7 +381,13 @@ class ColumbaRNodeInterface:
 
         # Configure device
         try:
-            time.sleep(1.5)  # Allow BLE connection to fully stabilize
+            # Allow BLE connection to fully stabilize:
+            # - Encryption handshake must complete (RNode requires ble_authenticated=true)
+            # - CCCD descriptor write already completed (waited in Kotlin connect())
+            # BLE needs more time than Classic for the encryption exchange
+            stabilize_delay = 2.5 if self.connection_mode == self.MODE_BLE else 1.0
+            RNS.log(f"Waiting {stabilize_delay}s for {mode_str} connection to stabilize...", RNS.LOG_DEBUG)
+            time.sleep(stabilize_delay)
             self._configure_device()
             return True
         except Exception as e:
@@ -644,7 +650,10 @@ class ColumbaRNodeInterface:
             r_state = self.r_state
 
         # Check if we got the expected values back
-        if r_frequency is not None and r_frequency != self.frequency:
+        # Frequency: allow 100 Hz tolerance — the LoRa PLL frequency synthesizer
+        # quantizes to discrete steps and may not hit the exact requested frequency.
+        # e.g. configured=869556250 may report back as 869556213 (37 Hz off)
+        if r_frequency is not None and abs(r_frequency - self.frequency) > 100:
             RNS.log(f"Frequency mismatch: configured={self.frequency}, reported={r_frequency}", RNS.LOG_ERROR)
             return False
 
