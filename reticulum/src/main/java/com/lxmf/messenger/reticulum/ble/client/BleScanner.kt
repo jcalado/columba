@@ -102,6 +102,10 @@ class BleScanner(
     @Volatile
     private var currentScanInterval = activeScanIntervalMs
 
+    // Active connection count — set by BLE bridge to throttle scanning when at capacity
+    @Volatile
+    var activeConnectionCount: Int = 0
+
     // Callbacks
     var onDeviceDiscovered: ((BleDevice) -> Unit)? = null
     var onScanStarted: (() -> Unit)? = null
@@ -181,9 +185,19 @@ class BleScanner(
                 scanJob =
                     scope.launch {
                         while (isActive) {
+                            // Skip scanning when at max connections — no slots available
+                            if (activeConnectionCount >= BleConstants.MAX_CONNECTIONS) {
+                                Log.d(TAG, "At max connections ($activeConnectionCount), skipping scan")
+                                delay(idleScanIntervalMs)
+                                continue
+                            }
+                            val scanStart = System.currentTimeMillis()
                             performScan(minRssi)
-                            delay(currentScanInterval)
                             adjustScanInterval()
+                            // Wait for remainder of interval (interval = total cycle, not gap)
+                            val elapsed = System.currentTimeMillis() - scanStart
+                            val remaining = currentScanInterval - elapsed
+                            if (remaining > 0) delay(remaining)
                         }
                     }
 
@@ -265,9 +279,9 @@ class BleScanner(
                         .Builder()
                         .setScanMode(determineScanMode())
                         .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
-                        .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
-                        .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
-                        .setReportDelay(0) // Report immediately
+                        .setMatchMode(ScanSettings.MATCH_MODE_STICKY)
+                        .setNumOfMatches(ScanSettings.MATCH_NUM_FEW_ADVERTISEMENT)
+                        .setReportDelay(5000) // Batch results every 5s to reduce CPU wakeups
                         .build()
 
                 // Reset new devices counter
@@ -390,13 +404,14 @@ class BleScanner(
     /**
      * Determine scan mode based on current state.
      *
-     * - LOW_LATENCY: When actively discovering (high power but fast)
-     * - BALANCED: Normal and idle mode (idle interval already saves battery;
-     *   LOW_POWER's ~10% duty cycle leaves too few radio windows for discovery)
+     * - LOW_LATENCY: When actively discovering many new devices
+     * - BALANCED: Active scanning with moderate new device activity
+     * - LOW_POWER: Idle mode when no new devices are being found
      */
     private fun determineScanMode(): Int =
         when {
             newDevicesInLastScan > NEW_DEVICE_THRESHOLD -> ScanSettings.SCAN_MODE_LOW_LATENCY
+            currentScanInterval >= idleScanIntervalMs -> ScanSettings.SCAN_MODE_LOW_POWER
             else -> ScanSettings.SCAN_MODE_BALANCED
         }
 

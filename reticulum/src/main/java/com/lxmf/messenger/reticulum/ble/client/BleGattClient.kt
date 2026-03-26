@@ -85,6 +85,7 @@ class BleGattClient(
         var handshakeInProgress: Boolean = false, // Track if handshake is already started
         var keepaliveJob: Job? = null, // Keepalive job to prevent supervision timeout
         var consecutiveKeepaliveFailures: Int = 0, // Track consecutive keepalive failures
+        var lastDataActivityMs: Long = 0L, // Timestamp of last real data send/receive
     )
 
     // Active connections: address -> ConnectionData
@@ -345,6 +346,13 @@ class BleGattClient(
                 ?: return Result.failure(IllegalStateException("RX characteristic not found for $address"))
 
         return try {
+            // Track real data activity (not keepalive) so keepalive can be suppressed
+            if (data.size > 1) {
+                connectionsMutex.withLock {
+                    connections[address]?.lastDataActivityMs = System.currentTimeMillis()
+                }
+            }
+
             // Queue write operation
             operationQueue.enqueue(
                 BleOperationQueue.BleOperation.WriteCharacteristic(
@@ -834,6 +842,18 @@ class BleGattClient(
                 connections[address]?.handshakeInProgress = false
             }
 
+            // Downgrade connection priority to save battery now that handshake is done
+            connectionsMutex.withLock { connections[address]?.gatt }?.let { gatt ->
+                withContext(Dispatchers.Main) {
+                    try {
+                        gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+                        Log.d(TAG, "Downgraded to CONNECTION_PRIORITY_BALANCED for $address")
+                    } catch (e: SecurityException) {
+                        Log.w(TAG, "Permission denied downgrading connection priority for $address", e)
+                    }
+                }
+            }
+
             // Fire onConnected callback now that full handshake is complete
             onConnected?.invoke(address, mtu)
             Log.d(TAG, ">>> onConnected callback fired after full handshake (MTU=$mtu)")
@@ -970,6 +990,12 @@ class BleGattClient(
     ) {
         if (characteristic.uuid == BleConstants.CHARACTERISTIC_TX_UUID) {
             Log.v(TAG, "Received ${value.size} bytes from $address")
+            // Track data activity so keepalive can be suppressed while data flows
+            scope.launch {
+                connectionsMutex.withLock {
+                    connections[address]?.lastDataActivityMs = System.currentTimeMillis()
+                }
+            }
             onDataReceived?.invoke(address, value)
         }
     }
@@ -1110,10 +1136,10 @@ class BleGattClient(
 
     /**
      * Start connection keepalive to prevent Android supervision timeout.
-     * Sends a 1-byte keepalive packet every 15 seconds to keep the connection alive.
+     * Sends a 1-byte keepalive packet periodically to keep the connection alive.
+     * Skips sending when real data was recently exchanged (within the keepalive interval).
      *
      * Android BLE connections timeout after 20-30 seconds of inactivity (status code 8).
-     * This keepalive mechanism prevents that timeout during idle periods.
      *
      * @param address MAC address of the device
      */
@@ -1126,17 +1152,9 @@ class BleGattClient(
                 // Start new keepalive job
                 connData.keepaliveJob =
                     scope.launch {
-                        // Send immediate first keepalive to prevent supervision timeout
-                        // Android BLE connections can timeout after ~20s of inactivity,
-                        // so we send immediately rather than waiting for the first interval
-                        try {
-                            val keepalivePacket = byteArrayOf(0x00)
-                            val result = sendData(address, keepalivePacket)
-                            if (result.isSuccess) {
-                                Log.v(TAG, "Initial keepalive sent to $address")
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Initial keepalive error for $address", e)
+                        // Mark initial activity since handshake just completed
+                        connectionsMutex.withLock {
+                            connections[address]?.lastDataActivityMs = System.currentTimeMillis()
                         }
 
                         // Continue with regular interval
@@ -1151,6 +1169,16 @@ class BleGattClient(
                             if (!stillConnected) {
                                 Log.d(TAG, "Keepalive stopping for $address: connection no longer exists")
                                 return@launch
+                            }
+
+                            // Skip keepalive if real data was exchanged recently
+                            val lastActivity = connectionsMutex.withLock {
+                                connections[address]?.lastDataActivityMs ?: 0L
+                            }
+                            val timeSinceActivity = System.currentTimeMillis() - lastActivity
+                            if (timeSinceActivity < BleConstants.CONNECTION_KEEPALIVE_INTERVAL_MS) {
+                                Log.v(TAG, "Skipping keepalive for $address: data exchanged ${timeSinceActivity}ms ago")
+                                continue
                             }
 
                             try {

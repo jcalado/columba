@@ -2,10 +2,10 @@ package com.lxmf.messenger.reticulum.ble.model
 
 data class BlePowerSettings(
     val preset: BlePowerPreset = BlePowerPreset.BALANCED,
-    val discoveryIntervalMs: Long = 5000L,
-    val discoveryIntervalIdleMs: Long = 30000L,
-    val scanDurationMs: Long = 10000L,
-    val advertisingRefreshIntervalMs: Long = 60_000L,
+    val discoveryIntervalMs: Long = 15000L,
+    val discoveryIntervalIdleMs: Long = 45000L,
+    val scanDurationMs: Long = 8000L,
+    val advertisingRefreshIntervalMs: Long = 120_000L,
 )
 
 enum class BlePowerPreset {
@@ -17,16 +17,13 @@ enum class BlePowerPreset {
 
     companion object {
         // Parameters: discoveryIntervalMs, discoveryIntervalIdleMs, scanDurationMs, advertisingRefreshIntervalMs
-        // scanDurationMs is intentionally non-monotonic across profiles (5s, 10s, 8s):
-        //   PERFORMANCE: short scans + frequent cycling (3s gap) = fastest response to new devices
-        //   BALANCED: long scans = most radio windows per scan for reliable detection
-        //   BATTERY_SAVER: medium scans = sufficient windows while conserving battery on infrequent scans
+        // discoveryIntervalMs is the TOTAL cycle time (scan + gap), not just the gap.
+        // Scan duration must be shorter than discovery interval to allow radio rest.
         fun getSettings(preset: BlePowerPreset): BlePowerSettings =
             when (preset) {
-                // scanDuration(5s) > interval(3s) is intentional — high duty-cycle sequential scanning
-                PERFORMANCE -> BlePowerSettings(PERFORMANCE, 3000L, 15000L, 5000L, 30_000L)
-                BALANCED -> BlePowerSettings(BALANCED, 5000L, 30000L, 10000L, 60_000L)
-                BATTERY_SAVER -> BlePowerSettings(BATTERY_SAVER, 15000L, 120000L, 8000L, 90_000L)
+                PERFORMANCE -> BlePowerSettings(PERFORMANCE, 8000L, 20000L, 5000L, 60_000L)
+                BALANCED -> BlePowerSettings(BALANCED, 15000L, 45000L, 8000L, 120_000L)
+                BATTERY_SAVER -> BlePowerSettings(BATTERY_SAVER, 30000L, 120000L, 5000L, 180_000L)
                 CUSTOM -> BlePowerSettings(CUSTOM) // Fallback defaults; configurePower() supplies real values
             }
 

@@ -52,8 +52,9 @@ object BleConstants {
     /**
      * Maximum number of simultaneous peer connections.
      * Android typically supports ~8 total BLE connections across all apps.
+     * Capped at 5 to reduce keepalive overhead and radio contention.
      */
-    const val MAX_CONNECTIONS = 7
+    const val MAX_CONNECTIONS = 5
 
     /**
      * Minimum RSSI (signal strength) to consider for connection.
@@ -83,21 +84,22 @@ object BleConstants {
     // Scanning Parameters
     /**
      * Discovery interval in milliseconds (active scanning).
-     * How often to start a new scan when actively discovering.
+     * This is the TOTAL cycle time including the scan window itself.
      */
-    const val DISCOVERY_INTERVAL_MS = 5000L // 5 seconds
+    const val DISCOVERY_INTERVAL_MS = 15000L // 15 seconds
 
     /**
      * Discovery interval in milliseconds (idle mode).
      * Reduced scan frequency when no new devices are found.
      */
-    const val DISCOVERY_INTERVAL_IDLE_MS = 30000L // 30 seconds
+    const val DISCOVERY_INTERVAL_IDLE_MS = 45000L // 45 seconds
 
     /**
      * Scan duration in milliseconds.
-     * How long each individual scan should last.
+     * How long each individual scan should last. Must be shorter than DISCOVERY_INTERVAL_MS
+     * to allow a radio rest gap between scans.
      */
-    const val SCAN_DURATION_MS = 10000L // 10 seconds
+    const val SCAN_DURATION_MS = 8000L // 8 seconds
 
     // Connection Timeouts
     /**
@@ -202,9 +204,9 @@ object BleConstants {
 
     /**
      * Connection keepalive interval in milliseconds.
-     * Send periodic packet every 15 seconds to prevent Android BLE supervision timeout.
+     * Send periodic packet to prevent Android BLE supervision timeout.
      * Android BLE connections timeout after 20-30 seconds of inactivity (status code 8).
-     * Keepalive packets keep the connection alive during idle periods.
+     * 25 seconds is safe (well under 30s timeout) while reducing radio wakeups vs 15s.
      */
-    const val CONNECTION_KEEPALIVE_INTERVAL_MS = 15000L // 15 seconds
+    const val CONNECTION_KEEPALIVE_INTERVAL_MS = 25000L // 25 seconds
 }

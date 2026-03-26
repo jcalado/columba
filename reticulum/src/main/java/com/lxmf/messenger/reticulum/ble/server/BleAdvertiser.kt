@@ -54,7 +54,7 @@ class BleAdvertiser(
 
     // Power-tunable advertising refresh interval
     @Volatile
-    var advertisingRefreshIntervalMs: Long = 60_000L
+    var advertisingRefreshIntervalMs: Long = 120_000L
         private set
 
     fun updatePowerSettings(settings: BlePowerSettings) {
@@ -192,10 +192,10 @@ class BleAdvertiser(
                 val settings =
                     AdvertiseSettings
                         .Builder()
-                        .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED) // Balance power and latency
+                        .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER) // Low power for battery savings
                         .setConnectable(true) // Must be connectable for GATT server
                         .setTimeout(0) // Advertise indefinitely
-                        .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH) // High power for better range and reliability
+                        .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM) // Medium power balances range and battery
                         .build()
 
                 // Build advertise data (what we broadcast)
@@ -402,10 +402,10 @@ class BleAdvertiser(
         val settings =
             AdvertiseSettings
                 .Builder()
-                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
+                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
                 .setConnectable(true)
                 .setTimeout(0)
-                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
                 .build()
 
         val advertiseData =

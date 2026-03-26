@@ -1791,6 +1791,9 @@ class KotlinBLEBridge(
             DedupeAction.NONE -> { /* No deduplication needed */ }
         }
 
+        // Update scanner's active connection count for scan throttling
+        scanner?.activeConnectionCount = connectedPeers.size
+
         // Notify native listeners of connection state change
         notifyConnectionChange()
     }
@@ -1940,6 +1943,9 @@ class KotlinBLEBridge(
                 Log.d(TAG, "Peer $address partially disconnected (central=${peer.isCentral}, peripheral=${peer.isPeripheral})")
             }
         }
+
+        // Update scanner's active connection count for scan throttling
+        scanner?.activeConnectionCount = connectedPeers.size
 
         // Notify native listeners of connection state change
         notifyConnectionChange()
