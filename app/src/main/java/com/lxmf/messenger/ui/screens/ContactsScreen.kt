@@ -60,6 +60,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -169,6 +170,7 @@ fun ContactsScreen(
     val announceSearchQuery by announceViewModel.searchQuery.collectAsState()
     val announceCount by announceViewModel.announceCount.collectAsState()
     val sortMode by announceViewModel.sortMode.collectAsState()
+    val activeFilterCount = countActiveFilters(selectedNodeTypes, showAudioAnnounces, selectedInterfaceTypes, maxHops)
     val isAnnouncing by announceViewModel.isAnnouncing.collectAsState()
     val announceSuccess by announceViewModel.announceSuccess.collectAsState()
     val announceError by announceViewModel.announceError.collectAsState()
@@ -315,12 +317,32 @@ fun ContactsScreen(
                                         },
                                 )
                             }
-                            // Filter button
-                            IconButton(onClick = { showNodeTypeFilterDialog = true }) {
-                                Icon(
-                                    imageVector = Icons.Default.FilterList,
-                                    contentDescription = "Filter node types",
-                                )
+                            // Filter button with active filter count badge
+                            Box {
+                                IconButton(onClick = { showNodeTypeFilterDialog = true }) {
+                                    Icon(
+                                        imageVector = Icons.Default.FilterList,
+                                        contentDescription = "Filter announces",
+                                        tint =
+                                            if (activeFilterCount > 0) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onPrimaryContainer
+                                            },
+                                    )
+                                }
+                                if (activeFilterCount > 0) {
+                                    Badge(
+                                        containerColor = MaterialTheme.colorScheme.error,
+                                        contentColor = MaterialTheme.colorScheme.onError,
+                                        modifier =
+                                            Modifier
+                                                .align(Alignment.TopEnd)
+                                                .offset(x = (-4).dp, y = 4.dp),
+                                    ) {
+                                        Text("$activeFilterCount")
+                                    }
+                                }
                             }
                             // Overflow menu
                             Box {

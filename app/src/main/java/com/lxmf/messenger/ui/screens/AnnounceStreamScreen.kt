@@ -1,20 +1,22 @@
 package com.lxmf.messenger.ui.screens
 
 import android.widget.Toast
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -23,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FilterList
@@ -33,22 +36,25 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -64,7 +70,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -402,6 +407,26 @@ fun AnnounceStreamScreen(
     }
 }
 
+/**
+ * Count the number of active (non-default) filters.
+ * Defaults: all node types selected, audio off, no interface filter, no max hops.
+ */
+fun countActiveFilters(
+    selectedTypes: Set<NodeType>,
+    showAudio: Boolean,
+    selectedInterfaceTypes: Set<InterfaceType>,
+    maxHops: Int?,
+): Int {
+    var count = 0
+    // Node types: default is just PEER selected
+    if (selectedTypes != setOf(NodeType.PEER)) count++
+    if (showAudio) count++
+    if (selectedInterfaceTypes.isNotEmpty()) count++
+    if (maxHops != null) count++
+    return count
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NodeTypeFilterDialog(
     selectedTypes: Set<NodeType>,
@@ -416,270 +441,241 @@ fun NodeTypeFilterDialog(
     var tempInterfaceSelection by remember { mutableStateOf(selectedInterfaceTypes) }
     var tempMaxHops by remember { mutableStateOf(maxHops) }
 
-    AlertDialog(
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = "Filter Announces",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-            )
-        },
-        text = {
-            Column(
-                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+        sheetState = sheetState,
+        contentWindowInsets = { WindowInsets(0) },
+        modifier = Modifier.systemBarsPadding(),
+    ) {
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            // Header with title and reset
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "Node Types",
-                    style = MaterialTheme.typography.titleSmall,
+                    text = "Filter Announces",
+                    style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
                 )
-
-                // Checkbox for each node type (PHONE is shown via the audio toggle, not here)
-                NodeType.entries.filter { it != NodeType.PHONE }.forEach { nodeType ->
-                    val (displayName, description) =
-                        when (nodeType) {
-                            NodeType.NODE -> "Node" to "Nomadnet nodes"
-                            NodeType.PEER -> "Peer" to "Nodes you can message with"
-                            NodeType.PROPAGATION_NODE -> "Relay" to "Relay/repeater nodes for signal propagation"
-                            NodeType.PHONE -> error("PHONE filtered above")
-                        }
-
-                    Row(
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    tempSelection =
-                                        if (tempSelection.contains(nodeType)) {
-                                            tempSelection - nodeType
-                                        } else {
-                                            tempSelection + nodeType
-                                        }
-                                }.padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Checkbox(
-                            checked = tempSelection.contains(nodeType),
-                            onCheckedChange = { isChecked ->
-                                tempSelection =
-                                    if (isChecked) {
-                                        tempSelection + nodeType
-                                    } else {
-                                        tempSelection - nodeType
-                                    }
-                            },
-                            colors =
-                                CheckboxDefaults.colors(
-                                    checkedColor = MaterialTheme.colorScheme.tertiary,
-                                    checkmarkColor = MaterialTheme.colorScheme.onTertiary,
-                                ),
-                        )
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = displayName,
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            Text(
-                                text = description,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-
-                // Audio announces filter
-                Row(
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                tempShowAudio = !tempShowAudio
-                            }.padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                TextButton(
+                    onClick = {
+                        tempSelection = setOf(NodeType.PEER)
+                        tempShowAudio = false
+                        tempInterfaceSelection = emptySet()
+                        tempMaxHops = null
+                    },
                 ) {
-                    Checkbox(
-                        checked = tempShowAudio,
-                        onCheckedChange = { tempShowAudio = it },
-                        colors =
-                            CheckboxDefaults.colors(
-                                checkedColor = MaterialTheme.colorScheme.error,
-                                checkmarkColor = MaterialTheme.colorScheme.onError,
-                            ),
-                    )
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Audio",
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = "Show audio call announces",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    Text("Reset")
                 }
+            }
 
-                Spacer(modifier = Modifier.height(8.dp))
-                HorizontalDivider()
-                Spacer(modifier = Modifier.height(8.dp))
+            // Node Types section - filter chips
+            Text(
+                text = "Node Types",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+            )
 
-                // Interface type filter section
-                Text(
-                    text = "Interface",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-
-                Text(
-                    text = "Filter by receiving interface (none selected = show all):",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                // Filterable interface types (exclude UNKNOWN for cleaner UX)
-                val interfaceTypes =
-                    listOf(
-                        InterfaceType.AUTO_INTERFACE to ("Local" to "AutoInterface (IPv6 link-local)"),
-                        InterfaceType.TCP_CLIENT to ("TCP" to "TCP connections (backbone links)"),
-                        InterfaceType.ANDROID_BLE to ("Bluetooth" to "Bluetooth Low Energy"),
-                        InterfaceType.RNODE to ("RNode" to "RNode radio interface"),
-                        InterfaceType.UNKNOWN to ("Other" to "Unknown or unrecognized interfaces"),
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val nodeTypeLabels =
+                    mapOf(
+                        NodeType.PEER to "Peer",
+                        NodeType.NODE to "Node",
+                        NodeType.PROPAGATION_NODE to "Relay",
                     )
 
-                interfaceTypes.forEach { (interfaceType, nameDesc) ->
-                    val (displayName, description) = nameDesc
-
-                    Row(
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    tempInterfaceSelection =
-                                        if (tempInterfaceSelection.contains(interfaceType)) {
-                                            tempInterfaceSelection - interfaceType
-                                        } else {
-                                            tempInterfaceSelection + interfaceType
-                                        }
-                                }.padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Checkbox(
-                            checked = tempInterfaceSelection.contains(interfaceType),
-                            onCheckedChange = { isChecked ->
-                                tempInterfaceSelection =
-                                    if (isChecked) {
-                                        tempInterfaceSelection + interfaceType
-                                    } else {
-                                        tempInterfaceSelection - interfaceType
-                                    }
+                nodeTypeLabels.forEach { (nodeType, label) ->
+                    FilterChip(
+                        selected = tempSelection.contains(nodeType),
+                        onClick = {
+                            tempSelection =
+                                if (tempSelection.contains(nodeType)) {
+                                    tempSelection - nodeType
+                                } else {
+                                    tempSelection + nodeType
+                                }
+                        },
+                        label = { Text(label) },
+                        leadingIcon =
+                            if (tempSelection.contains(nodeType)) {
+                                {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(FilterChipDefaults.IconSize),
+                                    )
+                                }
+                            } else {
+                                null
                             },
-                            colors =
-                                CheckboxDefaults.colors(
-                                    checkedColor = MaterialTheme.colorScheme.secondary,
-                                    checkmarkColor = MaterialTheme.colorScheme.onSecondary,
-                                ),
-                        )
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = displayName,
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            Text(
-                                text = description,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
+                    )
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
-                HorizontalDivider()
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Max hops filter section
-                Text(
-                    text = "Max Hops",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
+                FilterChip(
+                    selected = tempShowAudio,
+                    onClick = { tempShowAudio = !tempShowAudio },
+                    label = { Text("Audio") },
+                    leadingIcon =
+                        if (tempShowAudio) {
+                            {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(FilterChipDefaults.IconSize),
+                                )
+                            }
+                        } else {
+                            null
+                        },
                 )
+            }
 
-                Text(
-                    text = if (tempMaxHops != null) "Show announces within $tempMaxHops hops" else "No hop limit",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            HorizontalDivider()
+
+            // Interface section - filter chips
+            Text(
+                text = "Interface",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+            )
+
+            Text(
+                text = "None selected = show all",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val interfaceLabels =
+                    listOf(
+                        InterfaceType.AUTO_INTERFACE to "Local",
+                        InterfaceType.TCP_CLIENT to "TCP",
+                        InterfaceType.ANDROID_BLE to "Bluetooth",
+                        InterfaceType.RNODE to "RNode",
+                        InterfaceType.UNKNOWN to "Other",
+                    )
+
+                interfaceLabels.forEach { (ifaceType, label) ->
+                    FilterChip(
+                        selected = tempInterfaceSelection.contains(ifaceType),
+                        onClick = {
+                            tempInterfaceSelection =
+                                if (tempInterfaceSelection.contains(ifaceType)) {
+                                    tempInterfaceSelection - ifaceType
+                                } else {
+                                    tempInterfaceSelection + ifaceType
+                                }
+                        },
+                        label = { Text(label) },
+                        leadingIcon =
+                            if (tempInterfaceSelection.contains(ifaceType)) {
+                                {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(FilterChipDefaults.IconSize),
+                                    )
+                                }
+                            } else {
+                                null
+                            },
+                    )
+                }
+            }
+
+            HorizontalDivider()
+
+            // Max Hops section - compact inline
+            Text(
+                text = "Max Hops",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                FilterChip(
+                    selected = tempMaxHops != null,
+                    onClick = {
+                        tempMaxHops = if (tempMaxHops != null) null else 3
+                    },
+                    label = {
+                        Text(if (tempMaxHops != null) "${tempMaxHops} hops" else "No limit")
+                    },
+                    leadingIcon =
+                        if (tempMaxHops != null) {
+                            {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(FilterChipDefaults.IconSize),
+                                )
+                            }
+                        } else {
+                            null
+                        },
                 )
+            }
 
-                Spacer(modifier = Modifier.height(4.dp))
-
+            if (tempMaxHops != null) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Checkbox(
-                        checked = tempMaxHops != null,
-                        onCheckedChange = { enabled ->
-                            tempMaxHops = if (enabled) 3 else null
-                        },
-                    )
                     Text(
-                        text = "Limit hops",
-                        style = MaterialTheme.typography.bodyMedium,
+                        text = "1",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                }
-
-                if (tempMaxHops != null) {
                     Slider(
                         value = (tempMaxHops ?: 3).toFloat(),
                         onValueChange = { tempMaxHops = it.toInt() },
                         valueRange = 1f..15f,
                         steps = 13,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.weight(1f),
                     )
                     Text(
-                        text = "${tempMaxHops} hops",
+                        text = "15",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth(),
-                        textAlign = TextAlign.Center,
                     )
                 }
             }
-        },
-        confirmButton = {
-            TextButton(
+
+            // Apply button - full width
+            Button(
                 onClick = { onConfirm(tempSelection, tempShowAudio, tempInterfaceSelection, tempMaxHops) },
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("Apply")
+                Text("Apply Filters")
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        },
-    )
+        }
+    }
 }
 
 @androidx.compose.runtime.Stable
