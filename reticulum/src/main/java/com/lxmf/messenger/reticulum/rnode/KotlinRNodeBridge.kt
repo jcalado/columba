@@ -15,7 +15,10 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
@@ -249,6 +252,46 @@ class KotlinRNodeBridge(
 
     // Kotlin online status listeners (for UI notification)
     private val onlineStatusListeners = mutableListOf<RNodeOnlineStatusListener>()
+
+    // Bluetooth adapter state receiver — detects BT toggle off/on at the OS level.
+    // GATT callbacks may not fire when the adapter is turned off (varies by OEM/Android version),
+    // so we must explicitly detect this and trigger disconnect cleanup.
+    private var isReceiverRegistered = false
+    private val bluetoothStateReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(
+                context: Context?,
+                intent: Intent?,
+            ) {
+                if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                    val state =
+                        intent.getIntExtra(
+                            BluetoothAdapter.EXTRA_STATE,
+                            BluetoothAdapter.STATE_OFF,
+                        )
+                    when (state) {
+                        BluetoothAdapter.STATE_OFF, BluetoothAdapter.STATE_TURNING_OFF -> {
+                            Log.w(TAG, "Bluetooth adapter disabled — forcing RNode disconnect")
+                            if (isConnected.get()) {
+                                // Run on IO dispatcher since handleDisconnect calls Python via Chaquopy
+                                scope.launch { handleDisconnect() }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+    init {
+        try {
+            val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+            context.registerReceiver(bluetoothStateReceiver, filter)
+            isReceiverRegistered = true
+            Log.d(TAG, "Bluetooth adapter state receiver registered for RNode bridge")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register Bluetooth state receiver", e)
+        }
+    }
 
     /**
      * Set callback for received data.
@@ -953,6 +996,7 @@ class KotlinRNodeBridge(
         bleServicesDiscovered = false
         bleNotificationsEnabled = false
         bleMtuCallbackReceived = false
+        bleRssi = -100
     }
 
     /**
@@ -1503,6 +1547,14 @@ class KotlinRNodeBridge(
      */
     fun shutdown() {
         disconnect()
+        if (isReceiverRegistered) {
+            try {
+                context.unregisterReceiver(bluetoothStateReceiver)
+                isReceiverRegistered = false
+            } catch (e: Exception) {
+                Log.w(TAG, "Error unregistering Bluetooth state receiver", e)
+            }
+        }
         scope.cancel()
     }
 }

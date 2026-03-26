@@ -281,11 +281,11 @@ class ColumbaRNodeInterface:
         self._running = threading.Event()  # Thread-safe flag for read loop control
         self._read_lock = threading.Lock()
 
-        # Auto-reconnection
+        # Auto-reconnection (persistent with exponential backoff)
         self._reconnect_thread = None
         self._reconnecting = False
-        self._max_reconnect_attempts = 30  # Try for ~5 minutes (30 * 10s)
-        self._reconnect_interval = 10.0  # Seconds between reconnection attempts
+        self._reconnect_interval_min = 5.0   # Start at 5 seconds
+        self._reconnect_interval_max = 60.0  # Cap at 60 seconds between attempts
 
         # Error callback for surfacing RNode errors to UI
         self._on_error_callback = None
@@ -373,6 +373,15 @@ class ColumbaRNodeInterface:
         # Set up data callback
         self.kotlin_bridge.setOnDataReceived(self._on_data_received)
         self.kotlin_bridge.setOnConnectionStateChanged(self._on_connection_state_changed)
+
+        # Stop any existing read thread before starting a new one
+        # This prevents thread leaks if the disconnect callback didn't clear _running
+        if self._read_thread is not None and self._read_thread.is_alive():
+            RNS.log("Stopping existing read loop thread before starting new one...", RNS.LOG_INFO)
+            self._running.clear()
+            self._read_thread.join(timeout=2.0)
+            if self._read_thread.is_alive():
+                RNS.log("Old read thread did not stop within timeout - proceeding anyway", RNS.LOG_WARNING)
 
         # Start read thread
         self._running.set()
@@ -1092,6 +1101,8 @@ class ColumbaRNodeInterface:
             RNS.log(f"RNode disconnected: {device_name}", RNS.LOG_WARNING)
             self._set_online(False)
             self.detected = False
+            # Stop the read loop to prevent thread leak when start() creates a new one
+            self._running.clear()
             # Start auto-reconnection if not already reconnecting
             self._start_reconnection_loop()
 
@@ -1148,31 +1159,40 @@ class ColumbaRNodeInterface:
         RNS.log(f"Started auto-reconnection loop for {self.target_device_name}", RNS.LOG_INFO)
 
     def _reconnection_loop(self):
-        """Background thread that attempts to reconnect to the RNode."""
+        """Background thread that persistently attempts to reconnect to the RNode.
+
+        Uses exponential backoff: starts at 5s, doubles each failure, caps at 60s.
+        Resets backoff on each successful connection attempt that fails at a later stage
+        (e.g., connected but configuration failed). Never gives up — the interface stays
+        registered with RNS Transport and will reconnect whenever the device returns.
+        """
         attempt = 0
-        while self._reconnecting and attempt < self._max_reconnect_attempts:
+        interval = self._reconnect_interval_min
+
+        while self._reconnecting:
             attempt += 1
-            RNS.log(f"Reconnection attempt {attempt}/{self._max_reconnect_attempts} for {self.target_device_name}...", RNS.LOG_INFO)
+            RNS.log(f"Reconnection attempt {attempt} for {self.target_device_name} "
+                     f"(next retry in {interval:.0f}s if this fails)...", RNS.LOG_INFO)
 
             try:
                 if self.start():
-                    RNS.log(f"✅ Successfully reconnected to {self.target_device_name}", RNS.LOG_INFO)
+                    RNS.log(f"Successfully reconnected to {self.target_device_name}", RNS.LOG_INFO)
                     self._reconnecting = False
                     return
                 else:
-                    RNS.log(f"Reconnection attempt {attempt} failed, will retry in {self._reconnect_interval}s", RNS.LOG_WARNING)
+                    RNS.log(f"Reconnection attempt {attempt} failed", RNS.LOG_WARNING)
             except Exception as e:
                 RNS.log(f"Reconnection attempt {attempt} error: {e}", RNS.LOG_ERROR)
 
-            # Wait before next attempt (but check if we should stop)
-            for _ in range(int(self._reconnect_interval * 10)):
+            # Wait with exponential backoff (but check if we should stop)
+            wait_ticks = int(interval * 10)
+            for _ in range(wait_ticks):
                 if not self._reconnecting:
                     return
                 time.sleep(0.1)
 
-        if self._reconnecting:
-            RNS.log(f"❌ Failed to reconnect to {self.target_device_name} after {attempt} attempts", RNS.LOG_ERROR)
-            self._reconnecting = False
+            # Exponential backoff: double interval, cap at max
+            interval = min(interval * 2, self._reconnect_interval_max)
 
     def process_held_announces(self):
         """Process any held announces. Required by RNS Transport."""
