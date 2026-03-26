@@ -403,6 +403,7 @@ class SettingsViewModel
                             transportNodeEnabled = transportNodeEnabled,
                             // Message delivery state
                             defaultDeliveryMethod = defaultDeliveryMethod,
+                            tryPropagationOnFail = _state.value.tryPropagationOnFail,
                             // Sync state from flows (included in combine to avoid race conditions)
                             autoRetrieveEnabled = autoRetrieveEnabled,
                             retrievalIntervalSeconds = retrievalIntervalSeconds,
@@ -438,6 +439,12 @@ class SettingsViewModel
                             contacts = _state.value.contacts,
                             // Preserve notifications state from loadNotificationsSettings()
                             notificationsEnabled = _state.value.notificationsEnabled,
+                            // Preserve privacy state from loadPrivacySettings()
+                            blockUnknownSenders = _state.value.blockUnknownSenders,
+                            // Preserve message size limit from loadLocationSharingSettings()
+                            incomingMessageSizeLimitKb = _state.value.incomingMessageSizeLimitKb,
+                            // Preserve message sorting from loadLocationSharingSettings()
+                            sortMessagesBySentTime = _state.value.sortMessagesBySentTime,
                             // Preserve protocol versions from fetchProtocolVersions()
                             reticulumVersion = _state.value.reticulumVersion,
                             lxmfVersion = _state.value.lxmfVersion,
@@ -926,27 +933,18 @@ class SettingsViewModel
                     // 2. Restart the service process
                     // 3. Re-initialize with config from database
                     interfaceConfigManager
-                        .applyInterfaceChanges()
-                        .onSuccess {
+                        .applyInterfaceChanges(
+                            onServiceReady = { _state.value = _state.value.copy(isRestarting = false) },
+                        ).onSuccess {
                             Log.i(TAG, "Service restart completed successfully")
                         }.onFailure { error ->
                             Log.e(TAG, "Service restart failed: ${error.message}", error)
                         }.getOrThrow() // Convert failure to exception for catch block
-
-                    _state.value = _state.value.copy(isRestarting = false)
                 } catch (e: Exception) {
                     Log.e(TAG, "Error restarting service", e)
                     _state.value = _state.value.copy(isRestarting = false)
                 }
             }
-        }
-
-        /**
-         * Dismiss the restart dialog without stopping the background coroutine.
-         * The restart will either complete or hit the 60s timeout on its own.
-         */
-        fun cancelRestart() {
-            _state.value = _state.value.copy(isRestarting = false)
         }
 
         /**
@@ -967,8 +965,9 @@ class SettingsViewModel
                     // Use InterfaceConfigManager which handles the full restart lifecycle
                     // Python will check for shared instance, find it offline, and use own interfaces
                     interfaceConfigManager
-                        .applyInterfaceChanges()
-                        .onSuccess {
+                        .applyInterfaceChanges(
+                            onServiceReady = { _state.value = _state.value.copy(isRestarting = false) },
+                        ).onSuccess {
                             Log.i(TAG, "Service restart completed - now using Columba's own instance")
                         }.onFailure { error ->
                             Log.e(TAG, "Service restart failed: ${error.message}", error)
@@ -977,7 +976,6 @@ class SettingsViewModel
                     // Keep wasUsingSharedInstance = true to show informational banner
                     _state.value =
                         _state.value.copy(
-                            isRestarting = false,
                             wasUsingSharedInstance = true,
                         )
                 } catch (e: Exception) {
@@ -1573,6 +1571,11 @@ class SettingsViewModel
             viewModelScope.launch {
                 settingsRepository.sortMessagesBySentTime.collect { sortBySent ->
                     _state.update { it.copy(sortMessagesBySentTime = sortBySent) }
+                }
+            }
+            viewModelScope.launch {
+                settingsRepository.tryPropagationOnFailFlow.collect { enabled ->
+                    _state.update { it.copy(tryPropagationOnFail = enabled) }
                 }
             }
         }
