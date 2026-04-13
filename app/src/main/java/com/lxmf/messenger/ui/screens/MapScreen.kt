@@ -44,6 +44,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -99,8 +100,10 @@ import com.lxmf.messenger.ui.util.calculateDeclutteredPositions
 import com.lxmf.messenger.util.LocationCompat
 import com.lxmf.messenger.util.LocationPermissionManager
 import com.lxmf.messenger.viewmodel.ContactMarker
+import com.lxmf.messenger.viewmodel.InterfaceMarker
 import com.lxmf.messenger.viewmodel.MapViewModel
 import com.lxmf.messenger.viewmodel.MarkerState
+import com.lxmf.messenger.viewmodel.toFocusInterfaceDetails
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -217,7 +220,9 @@ fun MapScreen(
             !permissionSheetDismissed
     var showShareLocationSheet by remember { mutableStateOf(false) }
     var selectedMarker by remember { mutableStateOf<ContactMarker?>(null) }
+    var selectedInterface by remember { mutableStateOf<InterfaceMarker?>(null) }
     var showFocusInterfaceSheet by remember { mutableStateOf(false) }
+    val filteredInterfaceMarkers by viewModel.filteredInterfaceMarkers.collectAsState()
     val permissionSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val shareLocationSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val contactLocationSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -471,6 +476,9 @@ fun MapScreen(
         }
     }
 
+    // Collect pending "Locate on Map" focus before initial positioning LaunchedEffects
+    val pendingFocus by viewModel.pendingFocusContact.collectAsState()
+
     // If focus coordinates are provided, center on them instead of user location
     LaunchedEffect(mapLibreMap, focusLatitude, focusLongitude) {
         val map = mapLibreMap ?: return@LaunchedEffect
@@ -488,11 +496,11 @@ fun MapScreen(
         }
     }
 
-    // Fall back to user location if no focus coordinates
+    // Fall back to user location if no focus coordinates and no pending "Locate on Map"
     LaunchedEffect(mapLibreMap, state.userLocation != null) {
         val map = mapLibreMap ?: return@LaunchedEffect
         val location = state.userLocation ?: return@LaunchedEffect
-        if (!hasInitiallyCentered && focusLatitude == null) {
+        if (!hasInitiallyCentered && focusLatitude == null && pendingFocus == null) {
             val cameraPosition =
                 CameraPosition
                     .Builder()
@@ -525,6 +533,10 @@ fun MapScreen(
     LaunchedEffect(mapLibreMap, state.defaultRegionLoaded) {
         val map = mapLibreMap ?: return@LaunchedEffect
         if (!state.defaultRegionLoaded) return@LaunchedEffect
+
+        // Skip initial positioning when a "Locate on Map" request is pending —
+        // the pendingFocus LaunchedEffect will handle camera positioning instead.
+        if (pendingFocus != null) return@LaunchedEffect
 
         val savedPos = state.lastCameraPosition
         val defaultCenter = state.defaultRegionCenter
@@ -584,7 +596,6 @@ fun MapScreen(
     }
     // Animate camera to a contact marker requested via "Locate on Map".
     // Uses contactMarkers as a key so it retries when markers load from the database.
-    val pendingFocus by viewModel.pendingFocusContact.collectAsState()
     LaunchedEffect(pendingFocus, mapLibreMap, state.contactMarkers) {
         val hash = pendingFocus ?: return@LaunchedEffect
         val map = mapLibreMap ?: return@LaunchedEffect
@@ -600,10 +611,14 @@ fun MapScreen(
                     .zoom(15.0)
                     .build()
             map.animateCamera(CameraUpdateFactory.newCameraPosition(cameraPosition))
+            isInitialPositionSet = true
+            hasInitiallyCentered = true
             viewModel.consumePendingFocus()
         } ?: run {
-            // Markers loaded but contact not found — stop waiting to avoid stale focus
+            // Markers loaded but contact not found — stop waiting to avoid stale focus.
+            // Don't set hasInitiallyCentered so GPS LaunchedEffect can still recover camera.
             if (state.contactMarkers.isNotEmpty() || !state.isLoading) {
+                isInitialPositionSet = true
                 viewModel.consumePendingFocus()
             }
         }
@@ -822,6 +837,21 @@ fun MapScreen(
                             if (focusFeatures.isNotEmpty() && focusInterfaceDetails != null) {
                                 showFocusInterfaceSheet = true
                                 Log.d("MapScreen", "Focus marker tapped: ${focusInterfaceDetails.name}")
+                                return@addOnMapClickListener true
+                            }
+
+                            // Check for interface marker click
+                            val ifaceFeatures =
+                                map.queryRenderedFeatures(
+                                    screenPoint,
+                                    "interface-markers-layer",
+                                )
+                            if (ifaceFeatures.isNotEmpty()) {
+                                val id = ifaceFeatures.first().getStringProperty("id")
+                                if (id != null) {
+                                    selectedInterface =
+                                        state.interfaceMarkers.find { it.id == id }
+                                }
                                 return@addOnMapClickListener true
                             }
 
@@ -1078,6 +1108,67 @@ fun MapScreen(
             }
         }
 
+        // Interface markers layer — discovered network interfaces with locations
+        LaunchedEffect(filteredInterfaceMarkers, mapStyleLoaded) {
+            if (!mapStyleLoaded) return@LaunchedEffect
+            val map = mapLibreMap ?: return@LaunchedEffect
+            val style = map.style ?: return@LaunchedEffect
+
+            val ifaceSourceId = "interface-markers-source"
+            val ifaceLayerId = "interface-markers-layer"
+            val screenDensity = context.resources.displayMetrics.density
+
+            // Register category bitmaps (one per type, not per marker)
+            for (category in com.lxmf.messenger.ui.util.InterfaceCategory.entries) {
+                val imageId = "iface-${category.name}"
+                if (style.getImage(imageId) == null) {
+                    MarkerBitmapFactory
+                        .createInterfaceMarker(
+                            iconResId = category.markerIconResId,
+                            backgroundColor = category.markerColor,
+                            density = screenDensity,
+                            context = context,
+                        ).let { bitmap -> style.addImage(imageId, bitmap) }
+                }
+            }
+
+            // Build GeoJSON features
+            val features =
+                filteredInterfaceMarkers.map { marker ->
+                    Feature
+                        .fromGeometry(
+                            Point.fromLngLat(marker.longitude, marker.latitude),
+                        ).apply {
+                            addStringProperty("id", marker.id)
+                            addStringProperty("name", marker.name)
+                            addStringProperty("imageId", "iface-${marker.category.name}")
+                        }
+                }
+            val featureCollection = FeatureCollection.fromFeatures(features)
+
+            val existingSource = style.getSourceAs<GeoJsonSource>(ifaceSourceId)
+            if (existingSource != null) {
+                existingSource.setGeoJson(featureCollection)
+            } else {
+                style.addSource(GeoJsonSource(ifaceSourceId, featureCollection))
+                val layer =
+                    SymbolLayer(ifaceLayerId, ifaceSourceId).withProperties(
+                        PropertyFactory.iconImage(Expression.get("imageId")),
+                        PropertyFactory.iconAnchor("center"),
+                        PropertyFactory.iconAllowOverlap(true),
+                        PropertyFactory.iconIgnorePlacement(true),
+                        PropertyFactory.iconSize(1f),
+                    )
+                // Add below contact markers so contacts always render on top
+                val contactLayer = style.getLayer("contact-markers-layer")
+                if (contactLayer != null) {
+                    style.addLayerBelow(layer, "contact-markers-layer")
+                } else {
+                    style.addLayer(layer)
+                }
+            }
+        }
+
         // Add focus marker for discovered interface location (if provided)
         LaunchedEffect(focusLatitude, focusLongitude, focusLabel, mapStyleLoaded) {
             if (!mapStyleLoaded) return@LaunchedEffect
@@ -1182,6 +1273,43 @@ fun MapScreen(
                         .padding(top = 56.dp),
                 // Below TopAppBar
             )
+        }
+
+        // Interface type filter chips (shown when interface markers exist)
+        if (state.interfaceMarkers.isNotEmpty()) {
+            Row(
+                modifier =
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .statusBarsPadding()
+                        .padding(top = 64.dp, start = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                com.lxmf.messenger.ui.util.InterfaceCategory.entries
+                    .filter { cat -> state.interfaceMarkers.any { it.category == cat } }
+                    .forEach { category ->
+                        FilterChip(
+                            selected = state.interfaceFilterEnabled[category] ?: true,
+                            onClick = { viewModel.toggleInterfaceFilter(category) },
+                            label = {
+                                Text(
+                                    category.defaultText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    painter =
+                                        androidx.compose.ui.res
+                                            .painterResource(category.markerIconResId),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                            modifier = Modifier.height(32.dp),
+                        )
+                    }
+            }
         }
 
         // Scale bar (bottom right, next to My Location button)
@@ -1430,6 +1558,33 @@ fun MapScreen(
         )
     }
 
+    // Bottom sheet for tapped interface marker on the map
+    selectedInterface?.let { marker ->
+        val details = marker.toFocusInterfaceDetails()
+        FocusInterfaceBottomSheet(
+            details = details,
+            onDismiss = { selectedInterface = null },
+            onCopyLoraParams = {
+                val params = formatLoraParamsForClipboard(details)
+                val clipboard =
+                    context.getSystemService(Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                val clip = android.content.ClipData.newPlainText("LoRa Parameters", params)
+                clipboard.setPrimaryClip(clip)
+                Toast.makeText(context, "LoRa parameters copied", Toast.LENGTH_SHORT).show()
+            },
+            onUseForNewRNode = {
+                selectedInterface = null
+                onNavigateToRNodeWizardWithParams(
+                    details.frequency,
+                    details.bandwidth,
+                    details.spreadingFactor,
+                    details.codingRate,
+                )
+            },
+        )
+    }
+
     // Bottom sheet for focus interface details (discovered interface)
     if (showFocusInterfaceSheet && focusInterfaceDetails != null) {
         FocusInterfaceBottomSheet(
@@ -1617,13 +1772,20 @@ internal fun FocusInterfaceContent(
         }
 
         // Status details
-        if (details.lastHeard != null || details.hops != null) {
+        if (details.firstSeen != null || details.lastHeard != null || details.hops != null) {
             HorizontalDivider()
             Text(
                 text = "Status",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
+            details.firstSeen?.let { timestamp ->
+                val timeAgo = formatTimeAgo(timestamp)
+                InterfaceDetailRow(
+                    label = "First Seen",
+                    value = timeAgo,
+                )
+            }
             details.lastHeard?.let { timestamp ->
                 val timeAgo = formatTimeAgo(timestamp)
                 InterfaceDetailRow(
